@@ -1,0 +1,9 @@
+rule_id,trigger_type,trigger_value,requirement,required,evidence_field,description
+R-MTR-REQ,keyword,mtr|mtrs|mill test|mill cert|material cert|certs?\b|3\.1 cert|en 10204,Mill Test Report (EN 10204 3.1),Y,mtr_available,Buyer requested mill test reports / material certs
+R-MTR-INFO,material,Stainless Steel|Carbon Steel|Aluminum,Mill Test Report (EN 10204 3.1),N,mtr_available,MTR is standard practice for mill products; not explicitly requested by buyer
+R-DOMESTIC,keyword,dfars|domestic melt|melted in (the )?us|made in (the )?usa|buy america|us origin,Domestic origin (DFARS / Buy America),Y,country_of_origin_domestic,Buyer requires domestic (US) origin material
+R-COO,keyword,\bcoo\b|country of origin|origin cert,Country of Origin declaration,Y,country_of_origin,Buyer requested country of origin documentation
+R-STD,standard,*,Certification to stated specification,Y,certifications,Buyer named a specification; material must be certified to it
+R-NACE,keyword,nace|mr0175|mr-0175|mr0103,NACE MR0175 / MR0103 compliance,Y,certifications,Sour-service compliance requested
+R-PMI,keyword,\bpmi\b|positive material ident,Positive Material Identification (PMI) report,Y,none,PMI testing is not tracked in the catalog; must be confirmed with supplier
+R-DFARS-SPEC,keyword,itar|ear99|export control,Export control review,Y,none,Export control language present; requires human review

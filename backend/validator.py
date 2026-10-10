@@ -208,7 +208,9 @@ def validate_line(item: NormalizedLineItem) -> ValidationResult:
     # --- Grade / Material contradiction check ---
     if item.material and item.grade:
         expected_grades = MATERIAL_GRADE_MAP.get(item.material, [])
-        if expected_grades and item.grade not in expected_grades:
+        # Compare on the base alloy so tempers ("6061-T6") are accepted
+        base_grade = item.grade if item.grade.startswith("17-") else item.grade.split("-")[0]
+        if expected_grades and base_grade not in expected_grades:
             contradictions.append(
                 f"Grade \"{item.grade}\" is not a known grade for {item.material}. "
                 f"Known grades: {', '.join(expected_grades[:5])}."

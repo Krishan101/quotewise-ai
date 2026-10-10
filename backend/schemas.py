@@ -22,6 +22,7 @@ class InputType(str, Enum):
     XLSX  = "xlsx"
     CSV   = "csv"
     EMAIL = "email"
+    IMAGE = "image"
 
 
 class ComplianceStatus(str, Enum):
@@ -75,6 +76,12 @@ class NormalizedLineItem(BaseModel):
     # Unknown fields explicitly listed
     unknown_fields: List[str] = []            # e.g. ["standard", "finish"]
 
+    # Set False by the LLM gap-filler when the line is a header/footer/boilerplate
+    is_line_item: Optional[bool] = None
+
+    # Input guardrail flags (possible prompt injection). Flagged lines skip the LLM.
+    guardrail_flags: List[str] = []
+
     # Extraction metadata
     extraction_confidence: float = Field(ge=0.0, le=1.0, default=1.0)
     extraction_warnings: List[str] = []
@@ -112,6 +119,10 @@ class CatalogItem(BaseModel):
     unit: str
     stock_status: str                          # "IN_STOCK", "ORDER", "UNAVAILABLE"
     supplier: str
+    cost_per_lb: Optional[float] = None        # Supplier cost basis (DEMO DATA)
+    mtr_available: Optional[bool] = None       # None = unknown, never assumed
+    country_of_origin: Optional[str] = None    # None = unknown, never assumed
+    certifications: List[str] = []            # e.g. ["ASTM A240", "ASME SA240"]
     notes: Optional[str] = None
 
 
@@ -130,6 +141,10 @@ class CatalogMatchResult(BaseModel):
     fuzzy_score: Optional[float] = None        # 0-1 similarity score
     rejected_skus: List[str] = []             # SKUs that failed hard filter
     rejection_reasons: List[str] = []         # Why each was rejected
+    candidates_considered: int = 0
+    alternatives: List[str] = []              # Other SKUs that also passed hard filters
+    match_notes: List[str] = []               # Evidence: which fields matched and how
+    ambiguity_question: Optional[str] = None  # Set when passing SKUs differ in a way the buyer must decide
 
 
 # -------------------------------------------------------------------
@@ -144,12 +159,18 @@ class PricingResult(BaseModel):
     quantity: Optional[float] = None
     unit: Optional[str] = None
     margin_pct: Optional[float] = None
-    benchmark_price: Optional[float] = None
+    weight_lb_each: Optional[float] = None    # Calculated piece weight
+    price_per_lb: Optional[float] = None
+    cost_per_lb: Optional[float] = None
+    benchmark_low: Optional[float] = None     # Market range, $/lb
+    benchmark_high: Optional[float] = None
+    benchmark_price: Optional[float] = None   # Market midpoint, $/lb
     benchmark_source: Optional[str] = None    # Always labeled DEMO DATA or sourced
     benchmark_date: Optional[str] = None
     price_rationale: Optional[str] = None     # Human-readable explanation
     price_unverified: bool = False
     price_warnings: List[str] = []
+    calculation_steps: List[str] = []         # Every step of the math, shown to the reviewer
 
 
 # -------------------------------------------------------------------
@@ -190,7 +211,13 @@ class QuoteLine(BaseModel):
     # Decision engine outputs
     status_reason: str = ""                   # Why this status was assigned
     clarification_question: Optional[str] = None
+    clarification_history: List[dict] = []   # [{question, answer, timestamp}]
     ready_for_export: bool = False
+    approved: bool = False                    # Human reviewer sign-off; never set automatically
+    approved_by: Optional[str] = None
+
+    # PRISM (Block Convey) trajectory for this line's run; the Evaluator scores it
+    prism_trajectory_id: Optional[str] = None
 
 
 # -------------------------------------------------------------------
@@ -210,5 +237,7 @@ class RFQResponse(BaseModel):
     total_lines: int
     lines: List[QuoteLine]
     summary: dict                             # Counts per status
+    llm_used: bool = False
+    pipeline_warnings: List[str] = []
     demo_data_notice: str = "DEMO DATA: All catalog items, prices, and benchmarks are synthetic and for demonstration purposes only."
 

@@ -1,0 +1,8 @@
+material,grade,form,price_per_lb_low,price_per_lb_mid,price_per_lb_high,source,as_of_date
+Stainless Steel,304,Sheet,2.60,2.95,3.40,DEMO DATA - synthetic market benchmark,2026-10-01
+Stainless Steel,304,Plate,2.70,3.05,3.55,DEMO DATA - synthetic market benchmark,2026-10-01
+Stainless Steel,316,Sheet,3.65,4.10,4.70,DEMO DATA - synthetic market benchmark,2026-10-01
+Stainless Steel,316,Plate,3.75,4.20,4.80,DEMO DATA - synthetic market benchmark,2026-10-01
+Carbon Steel,A36,Plate,0.58,0.70,0.85,DEMO DATA - synthetic market benchmark,2026-10-01
+Aluminum,6061,Plate,3.30,3.70,4.20,DEMO DATA - synthetic market benchmark,2026-10-01
+Aluminum,5052,Sheet,3.05,3.40,3.85,DEMO DATA - synthetic market benchmark,2026-10-01

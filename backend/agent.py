@@ -12,8 +12,16 @@ Trust hierarchy:
 
 import json
 import os
+import re
+import time
 from typing import List, Optional
-from openai import OpenAI
+
+import prism
+
+try:
+    from openai import OpenAI
+except ImportError:  # LLM gap-fill becomes unavailable; rules still run
+    OpenAI = None
 from schemas import RawLineItem, NormalizedLineItem
 
 
@@ -21,12 +29,26 @@ from schemas import RawLineItem, NormalizedLineItem
 # NICRRON CLIENT
 # -------------------------------------------------------------------
 
-def get_nicrron_client() -> OpenAI:
+NICRRON_BASE_URL = os.getenv("NICRRON_BASE_URL", "https://api.nicrron.ai/v1")
+NICRRON_MODEL = os.getenv("NICRRON_MODEL", "nicrron/auto")
+
+# Fields the LLM may fill, and their types. Anything else it returns is ignored.
+NUMERIC_FIELDS = {"thickness_in", "width_in", "length_in", "quantity"}
+STRING_FIELDS = {"material", "grade", "form", "gauge", "unit", "standard", "finish"}
+
+
+def llm_available() -> bool:
+    return OpenAI is not None and bool(os.getenv("NICRRON_API_KEY"))
+
+
+def get_nicrron_client():
     api_key = os.getenv("NICRRON_API_KEY")
+    if OpenAI is None:
+        raise ValueError("openai package not installed.")
     if not api_key:
         raise ValueError("NICRRON_API_KEY environment variable not set.")
     return OpenAI(
-        base_url="https://api.nicrron.ai/v1",
+        base_url=NICRRON_BASE_URL,
         api_key=api_key
     )
 
@@ -71,7 +93,8 @@ Return ONLY the JSON array. No preamble, no markdown fences."""
 # -------------------------------------------------------------------
 
 def llm_gap_fill(
-    partially_extracted: List[NormalizedLineItem]
+    partially_extracted: List[NormalizedLineItem],
+    session_id: Optional[str] = None,
 ) -> List[NormalizedLineItem]:
     """
     For each NormalizedLineItem, send only unknown fields to NicrronNinoo.
@@ -81,14 +104,20 @@ def llm_gap_fill(
     if not partially_extracted:
         return []
 
-    # Split into: needs LLM vs already complete
-    needs_llm = [item for item in partially_extracted if item.unknown_fields]
-    already_complete = [item for item in partially_extracted if not item.unknown_fields]
+    # Split into: needs LLM vs already complete. Lines flagged by the input
+    # guardrail never reach the model.
+    needs_llm = [item for item in partially_extracted if item.unknown_fields and not item.guardrail_flags]
+    already_complete = [item for item in partially_extracted if item not in needs_llm]
 
     if not needs_llm:
         return partially_extracted
 
-    client = get_nicrron_client()
+    if not llm_available():
+        for item in needs_llm:
+            item.extraction_warnings.append(
+                "LLM gap-fill skipped (NICRRON_API_KEY not set). Unknown fields remain unknown."
+            )
+        return partially_extracted
 
     # Build prompt payload
     lines_payload = []
@@ -116,17 +145,36 @@ def llm_gap_fill(
 
 {json.dumps(lines_payload, indent=2)}"""
 
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": user_message}
+    ]
     try:
+        client = get_nicrron_client()
+        started = time.perf_counter()
         response = client.chat.completions.create(
-            model="nicrron/auto",
+            model=NICRRON_MODEL,
             max_tokens=4000,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_message}
-            ]
+            messages=messages
         )
 
         raw_response = response.choices[0].message.content.strip()
+
+        # Trace to PRISM: the RFQ text in `messages` is what the dashboard Guardrail inspects
+        usage = getattr(response, "usage", None)
+        try:
+            prism.trace_llm_call(
+                model=getattr(response, "model", None) or NICRRON_MODEL,
+                messages=messages,
+                output=raw_response,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
+                tokens_out=getattr(usage, "completion_tokens", 0) or 0,
+                session_id=session_id,
+                metadata={"lines": [i.line_number for i in needs_llm]},
+            )
+        except Exception as e:
+            print(f"PRISM trace failed: {e}")
 
         # Strip markdown fences if present
         if raw_response.startswith("```"):
@@ -136,6 +184,8 @@ def llm_gap_fill(
         raw_response = raw_response.strip()
 
         llm_results = json.loads(raw_response)
+        if isinstance(llm_results, dict):
+            llm_results = [llm_results]
         llm_map = {r["line_number"]: r for r in llm_results if "line_number" in r}
 
         # Merge LLM results back into partially extracted items
@@ -190,23 +240,62 @@ def merge_llm_into_item(
     Only fields in item.unknown_fields are eligible for LLM fill.
     """
     filled = llm_data.get("fields_filled", {})
-    still_unknown = llm_data.get("still_unknown", [])
     llm_warnings = llm_data.get("extraction_warnings", [])
     llm_confidence = float(llm_data.get("extraction_confidence", 0.5))
 
     # Apply only to fields that were unknown
+    llm_filled = []
     for field in list(item.unknown_fields):
         if field in filled and filled[field] is not None:
             # Only set if currently None (rules win)
-            current_val = getattr(item, field, None)
-            if current_val is None:
-                try:
-                    setattr(item, field, filled[field])
-                except Exception:
-                    pass
+            if getattr(item, field, None) is not None:
+                continue
+            if field in NUMERIC_FIELDS:
+                value = safe_float(filled[field])
+            elif field in STRING_FIELDS:
+                value = str(filled[field]).strip() or None
+            else:
+                value = None
+            if value is None:
+                continue
 
-    # Update unknown fields to what LLM also couldn't resolve
-    item.unknown_fields = still_unknown
+            # Grounding: an LLM value is only accepted with evidence
+            if field in NUMERIC_FIELDS:
+                if not _number_in_text(value, item.original_text):
+                    item.extraction_warnings.append(
+                        f"LLM value {field}={value} REJECTED: that number does not appear in the buyer's text."
+                    )
+                    continue
+                evidence = "number appears in the buyer's text"
+            elif field in prism.KB_GROUNDED_FIELDS:
+                context = {"material": item.material, "grade": item.grade, "form": item.form}
+                supported, evidence = prism.ground_field(field, value, context)
+                if supported is False:
+                    item.extraction_warnings.append(
+                        f"LLM value {field}=\"{value}\" REJECTED by Knowledge Base grounding. {evidence}"
+                    )
+                    continue
+                if supported is None:
+                    evidence = f"UNGROUNDED ({evidence})"
+            else:
+                evidence = "not groundable"
+
+            setattr(item, field, value)
+            llm_filled.append(f"{field}={value} [{evidence}]")
+
+    if llm_filled:
+        item.extraction_warnings.append(
+            "Filled by LLM (NicrronNinoo), not rules: " + "; ".join(llm_filled)
+            + ". Verify against the original text."
+        )
+
+    if llm_data.get("is_line_item") is False:
+        item.is_line_item = False
+
+    # Unknown = whatever is still null (do not trust the LLM's own list blindly)
+    item.unknown_fields = [
+        f for f in item.unknown_fields if getattr(item, f, None) is None
+    ]
 
     # Merge warnings
     item.extraction_warnings.extend(llm_warnings)
@@ -222,6 +311,17 @@ def merge_llm_into_item(
 # -------------------------------------------------------------------
 # HELPER
 # -------------------------------------------------------------------
+
+def _number_in_text(value: float, text: str) -> bool:
+    """True if the number is written in the text (25 / 25.0 / 0.06 / .060 all count)."""
+    for m in re.finditer(r"\d*\.?\d+", text):
+        try:
+            if abs(float(m.group(0)) - value) < 1e-9:
+                return True
+        except ValueError:
+            pass
+    return False
+
 
 def safe_float(value) -> Optional[float]:
     if value is None:

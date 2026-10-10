@@ -11,7 +11,7 @@ Trust hierarchy:
 """
 
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from schemas import RawLineItem, NormalizedLineItem
 
 
@@ -42,6 +42,9 @@ GRADE_PATTERNS = [
      lambda m: (m.group(1) + ("-" + m.group(2) if m.group(2) else "")).strip("-")),
     # Carbon steel grades
     (r"\b(A36|A572|A514|1018|1020|1045|4130|4140)\b", lambda m: m.group(1).upper()),
+    # Titanium grades ("Gr 2", "Grade 5", "CP2", "Ti-6Al-4V"); kept last so steel grades win
+    (r"\b(?:gr(?:ade)?\.?\s*|cp\s*)(1|2|3|4|5|7|9|12|23)\b", lambda m: f"Grade {m.group(1)}"),
+    (r"\b(?:ti[\-\s]?)?6al[\-\s]?4v\b", lambda m: "Grade 5"),
 ]
 
 FORM_ALIASES = {
@@ -70,6 +73,7 @@ GAUGE_TO_INCHES = {
 
 STANDARD_PATTERNS = [
     r"\b(ASTM\s?[A-Z]\d{1,4}(?:[\/\-][A-Z]?\d{1,4})?)\b",
+    r"\b(ASME\s?SA[\-\s]?\d{1,4})\b",
     r"\b(ASME\s?[A-Z]{1,2}\d{1,4})\b",
     r"\b(AMS\s?\d{4}[A-Z]?)\b",
     r"\b(MIL[\-\s][A-Z]{1,5}[\-\s]\d+)\b",
@@ -77,25 +81,55 @@ STANDARD_PATTERNS = [
     r"\b(EN\s?\d{4,5})\b",
 ]
 
+# Bare ASTM spec numbers written without the "ASTM" prefix (e.g. "per A240")
+BARE_ASTM_SPECS = ["A240", "A276", "A312", "A479", "A480", "A554", "A666", "B209", "B221"]
+
 FINISH_ALIASES = {
     r"\b(2[Bb]|2B)\b":            "2B",
-    r"\b(no\.?\s?[14]|#[14])\b":  lambda m: "No." + re.search(r"[14]", m.group()).group(),
+    r"(?:\bno\.?\s?|#)([14])\b":  lambda m: "No." + m.group(1),
     r"\b(ba|bright[\s\-]?anneal)\b": "BA",
     r"\b(hr|hot[\s\-]?roll)\b":   "HR",
     r"\b(cr|cold[\s\-]?roll)\b":  "CR",
     r"\b(mirror|polished)\b":     "Mirror",
 }
 
+# Units of measure for QUANTITY. Dimension units (in, ft, mm) are deliberately
+# excluded here: "0.060 in" is a thickness, not a unit of sale.
 UNIT_PATTERNS = {
-    r"\b(ea|each|pcs?|pieces?)\b": "EA",
-    r"\b(lbs?|pounds?)\b":         "LB",
-    r"\b(kg|kilograms?)\b":        "KG",
-    r"\b(sqft|sq\.?\s?ft|square[\s\-]?feet)\b": "SQFT",
-    r"\b(ft|feet|foot)\b":         "FT",
-    r"\b(in|inch|inches)\b":       "IN",
-    r"\b(m|meters?)\b":            "M",
-    r"\b(sheets?)\b":              "EA",
+    r"(ea|each|pcs?|pieces?|sheets?|shts?|plates?|plts?|bars?|lengths?)": "EA",
+    r"(lbs?|pounds?)":                                                    "LB",
+    r"(kgs?|kilograms?)":                                                 "KG",
+    r"(sqft|sq\.?\s?ft|square[\s\-]?feet)":                               "SQFT",
 }
+
+# Grade -> material, used only when the text names a grade but no material word.
+# A grade like "304" or "A36" identifies exactly one material family, so this is a
+# lookup, not a guess. The inference is recorded as a warning on the line.
+GRADE_TO_MATERIAL = {
+    "304": "Stainless Steel", "304L": "Stainless Steel", "316": "Stainless Steel",
+    "316L": "Stainless Steel", "321": "Stainless Steel", "347": "Stainless Steel",
+    "410": "Stainless Steel", "430": "Stainless Steel", "2205": "Stainless Steel",
+    "2507": "Stainless Steel", "17-4": "Stainless Steel",
+    "A36": "Carbon Steel", "A572": "Carbon Steel", "A514": "Carbon Steel",
+    "1018": "Carbon Steel", "1020": "Carbon Steel", "1045": "Carbon Steel",
+    "4130": "Carbon Steel", "4140": "Carbon Steel",
+    "6061": "Aluminum", "6063": "Aluminum", "7075": "Aluminum",
+    "5052": "Aluminum", "3003": "Aluminum", "2024": "Aluminum",
+}
+
+def _strip_spec_tokens(text: str) -> str:
+    """Remove dimensions, grades, gauges and spec numbers so they are never read as a quantity."""
+    text = re.sub(DIM_PAIR_RE + r"(?:\s*[xX×]\s*\d*\.?\d+\s*(?:in(?:ch(?:es)?)?|\"|ft|feet|')?)?", " ", text)
+    for pattern, _ in GRADE_PATTERNS:
+        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\d{1,2}\s*ga(?:uge)?", " ", text, flags=re.IGNORECASE)
+    for pattern in STANDARD_PATTERNS:
+        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+    return text
+
+
+# A W x L pair, used to keep dimensions out of thickness / quantity / unit extraction
+DIM_PAIR_RE = r"\d*\.?\d+\s*(?:in(?:ch(?:es)?)?|\"|ft|feet|')?\s*[xX×]\s*\d*\.?\d+\s*(?:in(?:ch(?:es)?)?|\"|ft|feet|')?"
 
 
 # -------------------------------------------------------------------
@@ -136,26 +170,47 @@ def extract_gauge(text: str) -> Tuple[Optional[str], Optional[float]]:
     return None, None
 
 
+# A T x W x L triple; the thickness may be a fraction ("1/2\" x 96 x 240")
+TRIPLE_RE = r"(?<![\d./])(\d+/\d+|\d*\.?\d+)\s*(?:\"|in)?\s*[xX×]\s*(\d+\.?\d*)\s*(?:\"|in)?\s*[xX×]"
+
+
+def _to_inches(value: str) -> float:
+    if "/" in value:
+        num, den = value.split("/")
+        return round(int(num) / int(den), 4) if int(den) else float("inf")
+    return float(value)
+
+
 def extract_thickness(text: str) -> Optional[float]:
     """
     Extract thickness in inches from patterns like:
     0.060 in, 0.060", 1/4", 1/4 in, .060, 6mm
     """
-    # Decimal inches
-    m = re.search(r"\b(\d*\.?\d+)\s*(?:in(?:ch(?:es)?)?|\")\b", text, re.IGNORECASE)
-    if m:
+    # Remove W x L pairs (and a leading T in "T x W x L") so "48 x 96 in" is never a thickness
+    triple = re.search(TRIPLE_RE, text)
+    if triple and _to_inches(triple.group(1)) < 4:
+        return _to_inches(triple.group(1))
+    text = re.sub(DIM_PAIR_RE, " ", text)
+
+    # Fractional inches: 1/4, 3/8, 1/2 (checked first so "1/4 in" is not read as "4 in")
+    m = re.search(r"(?<![\d.])(\d+)/(\d+)\s*(?:in(?:ch(?:es)?)?(?![a-z])|\"|thk|thick)", text, re.IGNORECASE)
+    if m and int(m.group(2)) != 0:
+        return round(int(m.group(1)) / int(m.group(2)), 4)
+
+    # Decimal inches: 0.060 in, .060", 0.25 thk
+    for m in re.finditer(r"(?<![\d./])(\d*\.\d+|\d+)\s*(?:in(?:ch(?:es)?)?(?![a-z])|\"|thk|thick)", text, re.IGNORECASE):
         val = float(m.group(1))
-        # Sanity check: thickness for sheet/plate is typically 0.010 to 3.0 inches
+        # Sanity check: thickness for sheet/plate is typically 0.005 to 4.0 inches
         if 0.005 <= val <= 4.0:
             return val
 
-    # Fractional inches: 1/4, 3/8, 1/2, etc.
-    m = re.search(r"\b(\d+)/(\d+)\s*(?:in(?:ch(?:es)?)?|\")\b", text, re.IGNORECASE)
+    # Bare leading-dot decimal (".060") is a common way to write thickness
+    m = re.search(r"(?<![\d.])(\.\d{2,4})(?![\d.])", text)
     if m:
-        return round(int(m.group(1)) / int(m.group(2)), 4)
+        return float(m.group(1))
 
     # Millimeters → convert to inches
-    m = re.search(r"\b(\d*\.?\d+)\s*mm\b", text, re.IGNORECASE)
+    m = re.search(r"(?<![\d.])(\d*\.?\d+)\s*mm\b", text, re.IGNORECASE)
     if m:
         return round(float(m.group(1)) / 25.4, 4)
 
@@ -168,16 +223,24 @@ def extract_dimensions(text: str) -> Tuple[Optional[float], Optional[float]]:
     4x8, 48x96, 4 x 8, 48 x 96 in, 4'x8'
     Returns (width_in, length_in)
     """
-    # Pattern: NxM or N x M (feet or inches)
+    # T x W x L triple (e.g. "0.060 x 48 x 96"): the first value is thickness, skip it
+    triple = re.search(TRIPLE_RE, text)
+    if triple and _to_inches(triple.group(1)) < 4:
+        text = text[triple.start(2):]
+
+    # Pattern: NxM or N x M (feet or inches), optional unit mark after each number
     m = re.search(
-        r"\b(\d+\.?\d*)\s*[xX×]\s*(\d+\.?\d*)\s*(in(?:ch(?:es)?)?|\"|ft|feet|')?",
+        r"(?<![\d.])(\d+\.?\d*)\s*(?:in(?:ch(?:es)?)?|\"|ft|feet|')?\s*[xX×]\s*(\d+\.?\d*)\s*(in(?:ch(?:es)?)?|\"|ft|feet|')?",
         text
     )
     if m:
         a, b = float(m.group(1)), float(m.group(2))
-        unit = (m.group(3) or "").lower().strip("\"'")
+        unit = (m.group(3) or "").lower()
+        # A foot mark on the pair means both are in feet ("4' x 8'")
+        if "'" in m.group(0) and '"' not in m.group(0):
+            unit = "ft"
 
-        if unit in ("ft", "feet", "'"):
+        if unit in ("ft", "feet"):
             return round(a * 12, 2), round(b * 12, 2)
         else:
             # If values look like feet (<=12), convert; else treat as inches
@@ -193,24 +256,30 @@ def extract_quantity(text: str) -> Optional[float]:
     Extract quantity from patterns like:
     qty 50, quantity: 20, 50 pcs, x50, (20)
     """
+    text = _strip_spec_tokens(text)
     patterns = [
-        r"\bqty[\s:\.]*(\d+\.?\d*)\b",
-        r"\bquantity[\s:\.]*(\d+\.?\d*)\b",
-        r"\bq(?:ty)?[\s:\.]*(\d+\.?\d*)\b",
-        r"\b(\d+\.?\d*)\s*(?:pcs?|pieces?|ea|each|sheets?)\b",
-        r"\bx\s*(\d+\.?\d*)\b",
+        r"\bqty[\s:\.\-]*(\d[\d,]*\.?\d*)",
+        r"\bquantity[\s:\.\-]*(\d[\d,]*\.?\d*)",
+        r"(?<![\d.])(\d[\d,]*\.?\d*)\s*(?:pcs?|pieces?|ea|each|sheets?|shts?|plates?|plts?|lbs?|pounds?|kgs?|sq\.?\s?ft)\b",
+        r"\bx\s*(\d+)\b",
         r"\(\s*(\d+\.?\d*)\s*\)",
+        r"^\s*(\d+)\s*(?:[\-–:]\s*|\s+)(?=[A-Za-z])",  # leading count: "10 - 304 SS sheet ..."
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            return float(m.group(1))
+            return float(m.group(1).replace(",", ""))
     return None
 
 
 def extract_unit(text: str) -> Optional[str]:
+    """
+    Unit of sale is only taken from a word attached to a quantity
+    ("10 pcs", "500 lbs", "qty 10 ea"). Dimension units are never used.
+    """
+    text = _strip_spec_tokens(text)
     for pattern, value in UNIT_PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
+        if re.search(r"(?<![\d.])\d[\d,]*\.?\d*\s*" + pattern + r"(?![a-z])", text, re.IGNORECASE):
             return value
     return None
 
@@ -219,7 +288,12 @@ def extract_standard(text: str) -> Optional[str]:
     for pattern in STANDARD_PATTERNS:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
-            return m.group(1).upper().replace(" ", " ")
+            std = re.sub(r"\s+", " ", m.group(1).upper())
+            # Normalize "ASTMA240" -> "ASTM A240"
+            return re.sub(r"^(ASTM|ASME|AMS|ISO|EN)(?=[A-Z0-9])", r"\1 ", std)
+    for spec in BARE_ASTM_SPECS:
+        if re.search(rf"\b{spec}\b", text, re.IGNORECASE):
+            return f"ASTM {spec}"
     return None
 
 
@@ -256,6 +330,13 @@ def extract_fields(raw: RawLineItem) -> NormalizedLineItem:
     unit      = extract_unit(text)
     standard  = extract_standard(text)
     finish    = extract_finish(text)
+
+    # A grade identifies the material family unambiguously; record that we inferred it
+    if material is None and grade:
+        inferred = GRADE_TO_MATERIAL.get(grade if grade == "17-4" else grade.split("-")[0])
+        if inferred:
+            material = inferred
+            warnings.append(f"Material \"{inferred}\" inferred from grade {grade} (rule lookup, not LLM).")
 
     # Track what rules could not determine
     if material  is None: unknown_fields.append("material")

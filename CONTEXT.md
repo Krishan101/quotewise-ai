@@ -84,9 +84,12 @@ client = OpenAI(base_url="https://api.nicrron.ai/v1", api_key=os.getenv("NICRRON
 
 ## Block Convey
 
-- Still to be integrated (P4 owns this)
-- Likely at document parsing or audit trail layer
-- No API docs received yet — stub for now
+- Product: PRISM (prismtrace-sdk>=0.5.1), integrated in backend/prism.py
+- Traces every NicrronNinoo call (dashboard Guardrail runs on the RFQ text)
+- Submits one trajectory per line; dashboard Evaluator scores the status decision
+- Grounds LLM-filled fields via Knowledge Base search (data/spec_reference.md); unsupported values rejected
+- Local input guardrail (guardrails.py) blocks injected lines, because PRISM only flags on the SDK path
+- Needs PRISMTRACE_API_KEY + PRISMTRACE_PROJECT_ID; disabled cleanly without them
 
 ---
 
@@ -147,27 +150,27 @@ Hard rule checks:
   - Generates pre-drafted clarification question if needed
      |
      v
-[4. CATALOG MATCHER]      matcher.py          PENDING
+[4. CATALOG MATCHER]      matcher.py          DONE
 Step A: Hard filters — eliminate incompatible SKUs by material+grade+form
 Step B: Fuzzy rank remaining candidates by dimension closeness
 Step C: If no candidate passes → NO_COMPATIBLE_MATCH
 Never forces a nearest match
      |
      v
-[5. PRICING ENGINE]       pricing.py          PENDING
+[5. PRICING ENGINE]       pricing.py          DONE
 Benchmark lookup from benchmarks.csv (labeled DEMO DATA)
 Calculates unit price, total, margin
 Shows data source, date, rationale
 If benchmark missing → PRICE_UNVERIFIED
      |
      v
-[6. COMPLIANCE CHECKER]   compliance.py       PENDING
+[6. COMPLIANCE CHECKER]   compliance.py       DONE
 Checks compliance_rules.csv
 MTR, COO, certs marked PRESENT/MISSING/UNKNOWN
 Never claims compliance without evidence
      |
      v
-[7. DECISION ENGINE]      decision.py         PENDING
+[7. DECISION ENGINE]      decision.py         DONE
 Assigns one status per line:
   READY_FOR_REVIEW
   NEEDS_CLARIFICATION
@@ -177,12 +180,12 @@ Assigns one status per line:
   PARSER_REVIEW
      |
      v
-[8. REACT UI]             frontend/           PENDING
+[8. REACT UI]             frontend/           DONE
 Upload zone, quote table, line detail drawer,
 clarification panel, export button
      |
      v
-[9. DRAFT EXPORT]                             PENDING
+[9. DRAFT EXPORT]                             DONE
 PDF or JSON, DRAFT watermark, all assumptions visible
 ```
 
@@ -211,18 +214,18 @@ quotewise-ai/
     extractor.py          DONE — Rule-based field extraction
     agent.py              DONE — NicrronNinoo LLM gap-filler
     validator.py          DONE — Hard rule checks + clarification questions
-    matcher.py            PENDING
-    pricing.py            PENDING
-    compliance.py         PENDING
-    decision.py           PENDING
-    main.py               PENDING
+    matcher.py            DONE   
+    pricing.py            DONE   
+    compliance.py         DONE   
+    decision.py           DONE   
+    main.py               DONE   
     data/
-      catalog.csv         PENDING — ~20 synthetic SS SKUs
-      benchmarks.csv      PENDING — Synthetic price benchmarks
-      compliance_rules.csv PENDING
-    requirements.txt      PENDING
-    .env.example          PENDING
-  frontend/               PENDING
+      catalog.csv         DONE — 22 synthetic SKUs (SS, CS, Al)
+      benchmarks.csv      DONE — Synthetic $/lb benchmarks
+      compliance_rules.csv DONE
+    requirements.txt      DONE
+    .env.example          DONE
+  frontend/               DONE — Vite + React + Tailwind
   README.md               DONE
 ```
 
@@ -293,6 +296,8 @@ quotewise-ai/
 
 ## Next Up
 
-**Stage 4:** matcher.py + catalog.csv
-- catalog.csv: ~20 synthetic SS sheet/plate SKUs
-- matcher.py: hard filter (material+grade+form exact match) then fuzzy dimension ranking
+- PRISM: sign up, coupon PROOFOFWORK, put key + project id in backend/.env, run `python prism_setup.py`
+- PRISM dashboard: add the prompt-injection Guardrail and attach the Evaluator (see README)
+- Add NICRRON_API_KEY to backend/.env and test LLM gap-fill on messy lines
+- Record demo video using the sample RFQ (Load sample RFQ button covers every status)
+- Fill in team names and Devpost checklist

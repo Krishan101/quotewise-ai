@@ -389,6 +389,14 @@ def parse_spreadsheet(
                 if not row_values:
                     continue
 
+                # Keep column headers with values ("Qty: 5") so a bare number
+                # in a quantity column is not lost or mistaken for something else
+                row_values = [
+                    f"{str(col).strip()}: {str(v).strip()}"
+                    if not str(col).startswith("Unnamed") else str(v).strip()
+                    for col, v in row.items() if pd.notna(v) and str(v).strip()
+                ]
+
                 row_text = " | ".join(row_values)
                 if len(row_text) > 4:
                     candidates.append((row_text, {
