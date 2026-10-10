@@ -134,7 +134,7 @@ PDF or JSON, watermarked DRAFT, assumptions visible
 quotewise-ai/
   backend/
     schemas.py            # Pydantic models and status enums (DONE)
-    parser.py             # PDF, CSV, XLSX, text ingestion (PENDING)
+    parser.py             # PDF, CSV, XLSX, EML, image ingestion (DONE)
     agent.py              # Claude extraction + normalization (PENDING)
     validator.py          # Hard rule checks (PENDING)
     matcher.py            # Catalog matching (PENDING)
@@ -199,7 +199,7 @@ quotewise-ai/
 | Component | Status |
 |---|---|
 | schemas.py | DONE |
-| parser.py | PENDING |
+| parser.py | DONE |
 | agent.py | PENDING |
 | validator.py | PENDING |
 | matcher.py | PENDING |
