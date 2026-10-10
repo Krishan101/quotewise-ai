@@ -141,7 +141,7 @@ quotewise-ai/
     parser.py             # PDF, CSV, XLSX, EML, image ingestion (DONE)
     extractor.py          # Rule-based field extraction - regex + lookups (DONE)
     agent.py              # NicrronNinoo LLM gap-filler for unknown fields (DONE)
-    validator.py          # Hard rule checks (PENDING)
+    validator.py          # Hard rule checks, dimension sanity, contradictions (DONE)
     matcher.py            # Catalog matching (PENDING)
     pricing.py            # Benchmark pricing (PENDING)
     compliance.py         # Compliance checker (PENDING)
@@ -207,7 +207,7 @@ quotewise-ai/
 | parser.py | DONE |
 | extractor.py | DONE |
 | agent.py | DONE |
-| validator.py | PENDING |
+| validator.py | DONE |
 | matcher.py | PENDING |
 | pricing.py | PENDING |
 | compliance.py | PENDING |
