@@ -62,7 +62,11 @@ Extracts raw line items from email text / PDF / CSV / XLSX
 Keeps original wording alongside everything it extracts
      |
      v
-[2. EXTRACTOR + NORMALIZER]    agent.py
+[2a. EXTRACTOR]               extractor.py
+Rule-based regex + lookup tables, deterministic
+     |
+     v
+[2b. LLM GAP-FILLER]          agent.py
 Claude reads each raw line and outputs structured JSON
 Unknown fields are explicitly null, never guessed
      |
@@ -135,7 +139,8 @@ quotewise-ai/
   backend/
     schemas.py            # Pydantic models and status enums (DONE)
     parser.py             # PDF, CSV, XLSX, EML, image ingestion (DONE)
-    agent.py              # Claude extraction + normalization (PENDING)
+    extractor.py          # Rule-based field extraction - regex + lookups (DONE)
+    agent.py              # NicrronNinoo LLM gap-filler for unknown fields (DONE)
     validator.py          # Hard rule checks (PENDING)
     matcher.py            # Catalog matching (PENDING)
     pricing.py            # Benchmark pricing (PENDING)
@@ -200,7 +205,8 @@ quotewise-ai/
 |---|---|
 | schemas.py | DONE |
 | parser.py | DONE |
-| agent.py | PENDING |
+| extractor.py | DONE |
+| agent.py | DONE |
 | validator.py | PENDING |
 | matcher.py | PENDING |
 | pricing.py | PENDING |
